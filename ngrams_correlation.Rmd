@@ -1,0 +1,337 @@
+---
+title: "Relationship between ngrams and correlations"
+author: "Saumya Mehta"
+date: "5/15/2018"
+output: html_document
+fig_caption: yes
+---
+
+<style type="text/css">
+.caption {
+    font-size: 16pt;
+    font-family: raleway;
+    color : #9E9E9E;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We can analyse which word immediatrly follow other words or tend to occur in same document. Tokens = "ngrams" argument in which tokenizes by pairs of adjacent words rather than individual words.<br>
+ggraph extends ggplot2 to construct network plots and widyr which calculates the pairwise correlation nd distances withtin tidy data frame. 
+
+## Tokenizing by n-gram
+By seeing how often a word X is followed by word Y, we can form a relationship between them.<br>
+Set parameter n in unnest_tokens() for how many words you want to capture in n-grams. 
+
+
+```{r}
+library(dplyr)
+library(tidytext)
+library(janeaustenr)
+
+austen_bigrams <- austen_books() %>% 
+  unnest_tokens(bigram, text, token = "ngrams",n = 2)
+
+austen_bigrams
+```
+
+Now we count and filter the n grams
+```{r}
+austen_bigrams %>% 
+  count(bigram, sort=T)
+```
+
+There are some pairs of stop words which we need to remove from the document. tidyr's separate() splits column into multiple columns using a delimiter. So to remove stop words, split bigrams into 2 columns and apply rules for stop word removal on each column.
+
+```{r}
+library(tidyr)
+
+bigrams_separated <- austen_bigrams %>% 
+  separate(bigram, c("word1","word2"), sep = " ")
+
+bigrams_filtered <- bigrams_separated %>% 
+  filter(!word1 %in% stop_words$word) %>% 
+  filter(!word2 %in% stop_words$word)
+
+# new bigram counts :
+bigram_counts <- bigrams_filtered %>% 
+  count(word1, word2, sort = T)
+
+bigram_counts
+
+```
+
+We might want to combine the columns for some analysis so we can use unite function to combine different columns.
+```{r}
+bigrams_united <- bigrams_filtered %>% 
+  unite(bigram, word1,word2, sep = " ")
+
+bigrams_united
+```
+
+## Analysing bigrams
+One bigram per row format is useful for exploratory analysis of text. 
+
+```{r}
+bigrams_filtered %>% 
+  filter(word2 == "street") %>% 
+  count(book, word1, sort = T)
+```
+
+We can treat bigrams as term and as a result we can find the tf-idf for them and visualize it. 
+```{r}
+bigram_tf_idf <- bigrams_united %>% 
+  count(book, bigram) %>% 
+  bind_tf_idf(bigram, book, n) %>% 
+  arrange(desc(tf_idf))
+
+bigram_tf_idf
+```
+```{r figs, echo=FALSE,fig.cap="\\label{fig:figs}Figure 4.1: The 12 bigrams with the highest tf-idf from each Jane Austen novel"}
+
+library(ggplot2)
+bigram_tf_idf %>% 
+  mutate(bigram = factor(bigram, levels = rev(unique(bigram)))) %>% 
+  group_by(book) %>% 
+  top_n(12) %>% 
+  ungroup() %>% 
+  ggplot(aes(bigram,tf_idf,fill = book)) +
+  geom_col(show.legend = F) + 
+  labs(
+    x = NULL,
+    y = "tf-idf of bigram to novel"
+  ) +
+  facet_wrap(~book, ncol = 2, scales = "free") + 
+  coord_flip() +
+  theme_light()
+```
+
+Pairs of words might capture the sentence structure which isn't present when working with unigrams and provide a context which makes the tokens more understandable. Bigrams can be useful when we have a large text dataset.
+
+
+## Using bigrams to provide context in sentiment analysis
+During sentiment analysis on unigrams, we didn't consider context of sentence and only positive or negative sentiment from each word. eg "I am not happy and I don't like it". Here sentiment may turn out to be positive due to happy and like. But when we do bigrams, we can count how many words preceed with not and find a negative sentiment.
+
+```{r}
+bigrams_separated %>% 
+  filter(word1 == "not") %>% 
+  count(word1,word2, sort = T)
+```
+
+Using AFINN lexicon for sentiment analysis. 
+
+```{r}
+
+AFINN <- get_sentiments("afinn")
+not_words <- bigrams_separated %>% 
+  filter(word1 == "not") %>% 
+  inner_join(AFINN, by = c(word2 = "word")) %>% 
+  count(word2, score, sort = T) %>% 
+  ungroup()
+
+not_words
+```
+We can calculate which words contributed the most towards the wrong direction. We can simply multiply their score by the number of times they appear.
+```{r figs1, echo=FALSE,fig.cap="\\label{fig:figs1}Figure 4.2: The 20 words preceded by ‘not’ that had the greatest contribution to sentiment scores, in either a positive or negative direction"}
+not_words %>% 
+  mutate(contribution = n * score) %>% 
+  arrange(desc(abs(contribution))) %>% 
+  head(20) %>% 
+  mutate(word2 = reorder(word2, contribution)) %>% 
+  ggplot(aes(word2, n*score, fill = n*score > 0)) +
+  geom_col(show.legend = F) + 
+    xlab("Words preceded by \"not\"") +
+  ylab("Sentiment score * number of occurrences") +
+  coord_flip() +
+  theme_light()
+```
+
+## Visualizing a network of bigrams using ggraph
+
+* A graph can be constructed from a tidy object since it has 3 variables : <br>
+1.) from <br>
+2.) to  <br>
+3.) weight <br>
+Igraph package has many powerful tools for manipulating and analysing networks. <br>
+Create an igraph object using graph_from_data_frame() function. 
+
+```{r}
+library(igraph)
+
+bigram_graph <- bigram_counts %>% 
+  filter(n>20) %>% 
+  graph_from_data_frame()
+
+bigram_graph
+```
+
+```{r figs2, echo=FALSE,fig.cap="\\label{fig:figs2}Figure 4.3: Common bigrams in Pride and Prejudice, showing those that occurred more than 20 times and where neither word was a stop-word"}
+library(ggraph)
+set.seed(2017)
+
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link()+
+  geom_node_point()+
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_light()
+```
+```{r figs3, echo=FALSE,fig.cap="\\label{fig:figs3}Figure 4.4:Common bigrams in Pride and Prejudice, with some polishing"}
+
+set.seed(2016)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+```
+
+In markov chain, the current word choice depends only on the previous words. 
+
+## counting and correlating the pairs of words using widyr package. 
+Aside of adjacent words, we may also be interested in knowing words that tend to occur in a particular document or chapter perhaps. <br>
+Most of the operations to find pairwise counts or correlations need to turn the data into a matrix first. <br>
+
+## counting and correlating among the sections. 
+Pride and prejudice is divided into 10 sections. We may be intrested to know which words fall into the same section. 
+```{r}
+austen_section_words <- austen_books() %>% 
+  filter(book == "Pride & Prejudice") %>% 
+  mutate(section = row_number() %/%10) %>% 
+  filter(section > 0) %>% 
+  unnest_tokens(word,text) %>% 
+  filter(!word %in% stop_words$word) 
+
+austen_section_words
+```
+
+pairwise_count() results in a row of each pair of words in word variable.
+
+```{r}
+library(widyr)
+
+# count words co occuring in a section
+word_pairs <- austen_section_words %>% 
+  pairwise_count(word, section, sort = T)
+
+word_pairs
+```
+
+## Pairwise correlation
+Phi coefficient measures how much more likely it is that either both X and Y appear or neither of them do. <br>
+The Equation for correlation is as under : <br>
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block">
+  <mi>&#x03D5;<!-- ϕ --></mi>
+  <mo>=</mo>
+  <mfrac>
+    <mrow>
+      <msub>
+        <mi>n</mi>
+        <mrow class="MJX-TeXAtom-ORD">
+          <mn>11</mn>
+        </mrow>
+      </msub>
+      <msub>
+        <mi>n</mi>
+        <mrow class="MJX-TeXAtom-ORD">
+          <mn>00</mn>
+        </mrow>
+      </msub>
+      <mo>&#x2212;<!-- − --></mo>
+      <msub>
+        <mi>n</mi>
+        <mrow class="MJX-TeXAtom-ORD">
+          <mn>10</mn>
+        </mrow>
+      </msub>
+      <msub>
+        <mi>n</mi>
+        <mrow class="MJX-TeXAtom-ORD">
+          <mn>01</mn>
+        </mrow>
+      </msub>
+    </mrow>
+    <msqrt>
+      <msub>
+        <mi>n</mi>
+        <mrow class="MJX-TeXAtom-ORD">
+          <mn>1</mn>
+          <mo>&#x22C5;<!-- ⋅ --></mo>
+        </mrow>
+      </msub>
+      <msub>
+        <mi>n</mi>
+        <mrow class="MJX-TeXAtom-ORD">
+          <mn>0</mn>
+          <mo>&#x22C5;<!-- ⋅ --></mo>
+        </mrow>
+      </msub>
+      <msub>
+        <mi>n</mi>
+        <mrow class="MJX-TeXAtom-ORD">
+          <mo>&#x22C5;<!-- ⋅ --></mo>
+          <mn>0</mn>
+        </mrow>
+      </msub>
+      <msub>
+        <mi>n</mi>
+        <mrow class="MJX-TeXAtom-ORD">
+          <mo>&#x22C5;<!-- ⋅ --></mo>
+          <mn>1</mn>
+        </mrow>
+      </msub>
+    </msqrt>
+  </mfrac>
+</math>
+<br>
+Here  : <br>
+n00 = Neither X or Y occur <br>
+n11 = Both X and Y occur
+
+Phi coefficient is similar to pearson correlation when applied to binary data. <br>
+The pairwise_cor() function in widyr lets us find the phi coefficient between words based on how often they appear in the same section.
+
+```{r}
+words_corr <- austen_section_words %>% 
+  group_by(word) %>% 
+  filter(n() >= 20) %>% 
+  pairwise_cor(word, section, sort = T)
+
+words_corr
+```
+
+```{r figs4, echo=FALSE,fig.cap="\\label{fig:figs4}Figure 4.8: Words from Pride and Prejudice that were most correlated with ‘elizabeth’, ‘pounds’, ‘married’, and ‘pride’"}
+words_corr %>%
+  filter(item1 %in% c("elizabeth", "pounds", "married", "pride")) %>%
+  group_by(item1) %>% 
+  top_n(6) %>% 
+  ungroup() %>% 
+  mutate(item2 = reorder(item2, correlation)) %>% 
+  ggplot(aes(item2, correlation)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~item1, scales = "free") +
+  coord_flip() + 
+  theme_light()
+```
+
+Just like Bigrams, we can visualize the correlations and cluster of words found by widyr package.
+
+```{r figs5, echo=FALSE,fig.cap="\\label{fig:figs5}Figure 4.9: Pairs of words in Pride and Prejudice that show at least a .15 correlation of appearing within the same 10-line section"}
+set.seed(2016)
+
+words_corr %>% 
+  filter(correlation > .15) %>% 
+  graph_from_data_frame() %>% 
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation), show.legend =  F) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), repel = T) +
+  theme_void()
+  
+```
+

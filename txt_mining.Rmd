@@ -1,0 +1,178 @@
+---
+title: "Text Mining In R Introduction"
+author: "Saumya Mehta"
+date: "5/14/2018"
+output: html_document
+fig_caption: yes
+---
+<style type="text/css">
+.caption {
+    font-size: 16pt;
+    font-family: raleway;
+    color : #9E9E9E;
+}
+</style>
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Tidy text (R package)
+Treating text as dataframes allows us to visualize, manipulate and summarise the characteristics of text easily and integrate natural language processing into our workflows.
+
+
+## Tidy text format
+Tidy data has a specific structure:<br>
+    * Each Variable is a column.
+    * Each observation is a row.
+    * Each type of observational unit is a table.<br>
+Table with one token per row. Token is a meaningful unit of text which we are interested in using for analysis. Token can be a word, n-gram, sentence or a paragraph. Tidytext package can convert to one term per row format. Keep input and output in tidy tables. Package includes functions to tidy the data if data is not in tidy format. After applying dplyr and other functions, converted to document-term matrix for machine learning applications. Models can be reconverted into tidy format for analysis and visualization. 
+
+
+## unnest_tokens function
+```{r}
+text <- c("Because I could not stop for Death -",
+          "He kindly stopped for me -",
+          "The Carriage held but just Ourselves -",
+          "and Immortality")
+library(dplyr)
+text_df <- data_frame(line = 1:4, text = text)
+text_df
+```
+This prints out a tibble. It will not convert string to factors and doesn't use row names. Now we need to convert text_df into one term per row format. Break the text into tokens and then transform into tidy structure. It is done by unnest_tokens(). 
+```{r}
+library(tidytext)
+text_df %>%
+  unnest_tokens(word,text)
+```
+Default tokenization of unnest_tokens is for one word.<br>
+    * Other columns such as line number from which word came from is retained. 
+    * Punctuation has been stripped.
+    * By default conversion to lower case.
+
+
+## Example : Tidying works of Jane Austen
+janeaustenr package<br>
+ Provides text in one row per line format
+```{r}
+  library(janeaustenr)
+  library(dplyr)
+  library(stringr)
+  
+  
+  original_books <- austen_books()%>%
+    mutate(line_number = row_number(),
+           chapter = cumsum(str_detect(text, regex("^chapter [\\divxlc]",ignore_case = T))))%>%
+    ungroup()
+    
+```
+Now, we need to transform into one token per row format using unnest_tokens()
+```{r}
+library(tidytext)
+tidy_books <- original_books%>%
+  unnest_tokens(word,text)
+```
+
+This function uses tokenizers package to separate each line in the original text into tokens. Now we need to remove the stop words. Stopwords are kept in dataset stop_words. We can remove them using anti join on the tidy_books.
+
+```{r}
+data("stop_words")
+tidy_books <- tidy_books%>%
+  anti_join(stop_words)
+```
+Finding the most common words using count.
+
+```{r}
+tidy_books%>%
+  count(word, sort =T)
+```
+
+```{r figs, echo=FALSE,fig.cap="\\label{fig:figs} Fig 1.1 Most common words in Austen's Novels"}
+library(ggplot2)
+tidy_books%>%
+  count(word, sort=T)%>%
+  filter(n>600) %>% 
+  mutate(word = reorder(word,n)) %>% 
+  ggplot(aes(word,n)) + 
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+
+```
+
+
+## Gutenberger package
+Package provides access to public domain networks from Project Guttenberg collection. Includes tools for downloading books and complete dataset of Project Guttenberg metadata to be used to find works of interest. gutenberg_download() to download by ID.
+
+
+## Word Frequencies
+```{r}
+library('gutenbergr')
+hgwells <- gutenberg_download(c(35,36,5230,159))
+```
+
+```{r}
+tidy_hgwells <- hgwells %>% 
+  unnest_tokens(word,text) %>% 
+  anti_join(stop_words)
+```
+
+```{r}
+tidy_hgwells %>% 
+  count(word, sort = T)
+```
+
+
+# Analysis for bronte 
+```{r}
+bronte <- gutenberg_download(c(1260, 768, 969, 9182, 767))
+
+tidy_bronte <- bronte %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words)
+
+tidy_bronte %>%
+  count(word, sort = TRUE)
+```
+
+Calculating frequencies
+```{r}
+library(tidyr)
+
+frequency <- bind_rows(mutate(tidy_bronte, author = 'Bronte Sisters'),
+                       mutate(tidy_hgwells, author = 'H.G. Wells'),
+                       mutate(tidy_books, author = 'Jane Austen')) %>% 
+  mutate(word = str_extract(word, "[a-z']+")) %>%
+  count(author, word) %>% 
+  group_by(author) %>% 
+  mutate(proportion = n/sum(n)) %>% 
+  select(-n) %>% 
+  spread(author, proportion) %>% 
+  gather(author, proportion, `Bronte Sisters`, `H.G. Wells`)
+```
+Plot for the same
+
+```{r figs1, echo=FALSE,fig.cap="\\label{fig:figs1} Fig 1.2 Word Proportions in Bronte Sisters and H.G. Wells"}
+library(scales)
+ggplot(frequency, aes(proportion, `Jane Austen`, color = abs(`Jane Austen` - proportion)))+
+  geom_abline(color = "gray40", lty = 2)+
+  geom_jitter(alpha = 0.1, size = 2.5, width = 0.3, height = 0.3)+
+  geom_text(aes(label = word),check_overlap = T, vjust = 0.3)+
+  scale_x_log10(labels = percent_format())+
+  scale_y_log10(labels = percent_format())+
+  scale_color_gradient(limits = c(0,0.001), low = "darkslategray4", high = "gray75")+
+  facet_wrap(~author, ncol = 2)+
+  theme(legend.position = "none")+
+  labs(y = "Jane Austen", x = NULL)
+```
+
+* There is more space at lower frequencies at austin wells than at austen bronte. This indicates that austen bronte are more similar than austen wells. 
+
+* Correlation test will help us determine how similar the classes are to each other.
+```{r}
+cor.test(data = frequency[frequency$author == "H.G. Wells",],
+         ~proportion + `Jane Austen`)
+
+cor.test(data = frequency[frequency$author == "Bronte Sisters",],
+         ~proportion + `Jane Austen`)
+```
+
+

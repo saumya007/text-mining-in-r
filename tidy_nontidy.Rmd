@@ -1,0 +1,168 @@
+---
+title: "Juggling between tidy and non tidy forms"
+author: "Saumya Mehta"
+date: "5/15/2018"
+output: html_document
+fig_caption: yes
+---
+<style type="text/css">
+.caption {
+    font-size: 16pt;
+    font-family: raleway;
+    color : #9E9E9E;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Tidying a document term matrix 
+* Each row represents one document
+* Each column represents one term
+* Each value (typically) contains the number of appearances of that term in that document. <br>
+DTMs are usually sparse matrices. DTMs cannot be used directly with tidy tools. Two Packages to convert between two formats :<br>
+      1.) tidy() : dtm to tidy data <br>
+      2.) cast() : tidy data to dtm (cast_sparse(), cast_dtm(), cast_dfm())
+
+## Tidying dtm object
+DocumentTermMatrix class from tm packages. 
+```{r}
+library(tm)
+
+data("AssociatedPress", package = "topicmodels")
+
+AssociatedPress
+```
+
+Access the terms in a dtm using Terms() function.
+```{r}
+terms <- Terms(AssociatedPress)
+head(terms)
+```
+
+To analyse with tidy tools, we need to convert it into tidy data using tidy(dtm object). 
+```{r}
+library(dplyr)
+library(tidytext)
+
+ap_td <- tidy(AssociatedPress)
+
+ap_td
+```
+
+Tidied version has no rows where count = 0. This form is convinient for analysis with dplyr, tidytext and ggplot2. 
+
+```{r}
+ap_sentiments <- ap_td %>% 
+  inner_join(get_sentiments("bing"), by = c(term = "word"))
+
+ap_sentiments
+```
+
+Analysing contribution to the sentiment.
+```{r figs, echo=FALSE,fig.cap="\\label{fig:figs}Figure 5.1: Words from AP articles with the greatest contribution to positive or negative sentiments, using the Bing sentiment lexicon"}
+library(ggplot2)
+
+ap_sentiments %>% 
+  count(sentiment, term, wt = count) %>% 
+  ungroup() %>% 
+  filter(n>=200) %>% 
+  mutate(n = ifelse(sentiment == "negative", -n,n)) %>% 
+  mutate(term = reorder(term,n)) %>% 
+  ggplot(aes(term,n, fill = sentiment)) +
+  geom_bar(stat = "identity") +
+  ylab ("Contribution to the sentiment") +
+  coord_flip() +
+  theme_light()
+
+```
+
+
+## Tidying dfm objects
+Document Feature Matrix class from quanteda package. 
+
+```{r}
+library(quanteda)
+data("data_corpus_inaugural", package = "quanteda")
+inaug_dfm <- dfm(data_corpus_inaugural, verbose = F)
+
+inaug_tidy <- tidy(inaug_dfm)
+
+inaug_tidy
+```
+
+We can find the words most specific to each inaugural speeches using tf-idf mapping.
+
+```{r}
+inaug_tf_idf <- inaug_tidy %>% 
+  bind_tf_idf(term,document,count) %>% 
+  arrange(desc(tf_idf))
+
+inaug_tf_idf
+```
+
+tidyr's complete() function is used to include zeros where the word didn't appear in the document.
+```{r}
+library(tidyr)
+
+year_term_counts <- inaug_tidy %>% 
+  extract(document, "year","(\\d+)",convert = T) %>% 
+  complete(year, term, fill = list(count = 0)) %>% 
+  group_by(year) %>% 
+  mutate(year_total = sum(count))
+```
+
+Here we pick up a few words and check how they changed in frequency over time.
+```{r figs1, echo=FALSE,fig.cap="\\label{fig:figs1}Figure 5.2: Changes in word frequency over time within Presidential inaugural addresses, for four selected terms"}
+year_term_counts %>% 
+  filter(term %in% c("god","america","foreign", "union","constitution","freedom")) %>% 
+  ggplot(aes(year, count/year_total)) +
+  geom_point() + 
+  geom_smooth() + 
+  facet_wrap(~term, scales = "free") + 
+  scale_y_continuous(labels = scales::percent_format()) +
+  ylab("% frequency of words in inaugural address")
+  
+```
+
+
+## Casting tidytext data into a matrix
+
+```{r}
+ap_td %>%
+  cast_dtm(document, term, count)
+
+ap_td %>%
+  cast_dfm(document, term, count)
+
+library(Matrix)
+
+# cast into a Matrix object
+m <- ap_td %>%
+  cast_sparse(document, term, count)
+
+class(m)
+
+dim(m)
+
+```
+
+```{r}
+library(janeaustenr)
+
+austen_dtm <- austen_books() %>%
+  unnest_tokens(word, text) %>%
+  count(book, word) %>%
+  cast_dtm(book, word, n)
+
+austen_dtm
+```
+
+
+## Tidying corpus objects with metadata
+A corpus object is structured like a list each containing both text and metadata. This is a flexible method os storage for documents but doesn't lend itself to processing with tidy tools. <br>
+We can thus use the tidy() method to construct a table with one row per document, including the metadata (such as id and datetimestamp) as columns alongside the text
+
+
+

@@ -1,0 +1,249 @@
+---
+title: "Sentiment Analysis using tidy data"
+author: "Saumya Mehta"
+date: "5/14/2018"
+output: html_document
+fig_caption: yes
+---
+<style type="text/css">
+.caption {
+    font-size: 16pt;
+    font-family: raleway;
+    color : #9E9E9E;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## sentiments dataset
+Tidytext package contains several sentiment lexicons in sentiments dataset.
+```{r}
+library(tidytext)
+sentiments
+```
+
+* 3 general purpose lexicons :<br>
+    + AFINN
+    + bing
+    + nrc<br>
+* All these lexicons are based on unigrams.
+* They contain english words with scores for positive/ negative sentiment.
+* nrc categorizes in binary fashion into categories of positive, negative, anger, anticipation, disgust, fear, joy, sadness, surprise, and trust. 
+* The bing lexicon categorizes words in a binary fashion into positive and negative categories. 
+* The AFINN lexicon assigns words with a score that runs between -5 and 5, with negative scores indicating negative sentiment and positive scores indicating positive sentiment. 
+* get_sentiment to get specific sentiment columns without the columns that are not used in that lexicon.
+```{r}
+get_sentiments("afinn")
+```
+
+```{r}
+get_sentiments("bing")
+```
+
+```{r}
+get_sentiments("nrc")
+```
+
+Dictionary sentiments find the total sentiment of a piece of text by adding the individual sentiment score for each word in the text.<br>
+These methods do not take into account qualifier before words such as "no good", or "not true". A lexicon based method like this is based on unigrams only. <br>
+Size of the chunk of text that we use to add up unigram scores can have effect on analysis.<br>
+A text the size of many paragraphs can often have positive and negative sentiment averaged out to about zero, while sentence-sized or paragraph-sized text often works better.
+
+
+## Sentiment analysis with inner join
+
+Removing stop words is an anti-join operation. Performing sentiment analysis is an inner join operation.
+<br>
+<br>
+Preparing data for sentiment analysis:
+
+```{r}
+library(janeaustenr)
+library(dplyr)
+library(stringr)
+
+tidy_books <- austen_books() %>% 
+  group_by(book) %>% 
+  mutate(line_number = row_number(),
+         chapter = cumsum(str_detect(text,regex("^chaper [\\divxlc]", ignore_case =T)))) %>% 
+  ungroup() %>% 
+  unnest_tokens(word,text)
+```
+
+Filter nrc for joy sentiment and then inner join tidy_books with resulting frame.
+```{r}
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+tidy_books %>% 
+  filter(book == "Emma") %>% 
+  inner_join(nrc_joy) %>% 
+  count(word, sort = T)
+```
+Smaller sections of text do not have enough words in them and larger sections can wash out narritive structutre. 
+
+```{r}
+library(tidyr)
+
+jane_austen_sentiment <- tidy_books %>% 
+  inner_join(get_sentiments("bing")) %>% 
+  count(book, index = line_number %/% 80, sentiment) %>% 
+  spread(sentiment, n, fill = 0) %>% 
+  mutate(sentiment = positive- negative)
+```
+
+Sentiment scores across the plot trajectory of each novel. 
+
+```{r figs, echo=FALSE,fig.cap="\\label{fig:figs}Figure 2.1: Sentiment through the narratives of Jane Austen’s novels"}
+library(ggplot2)
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book))+
+  geom_col(show.legend = F) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")+theme_bw()
+```
+
+
+## Comparing three sentiment dictionaries. 
+
+```{r}
+pride_prejudice <- tidy_books %>% 
+  filter(book == "Pride & Prejudice")
+```
+
+```{r}
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = line_number %/% 80) %>% 
+  summarise(sentiment = sum(score)) %>% 
+  mutate(method = "Afinn")
+
+bing_and_nrc <- bind_rows(pride_prejudice %>% 
+                            inner_join(get_sentiments("bing")) %>%
+                            mutate(method = "Bing et al."),
+                          pride_prejudice %>% 
+                            inner_join(get_sentiments("nrc") %>% 
+                                         filter(sentiment %in% c("positive", 
+                                                                 "negative"))) %>%
+                            mutate(method = "NRC")) %>%
+  count(method, index = line_number %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+
+Now we have estimate of net sentiment for each chunk of novel text for each sentiment lexicon. 
+
+```{r figs1, echo=FALSE,fig.cap="\\label{fig:figs1}Figure 2.2: Comparing three sentiment lexicons using Pride and Prejudice"}
+
+
+bind_rows(afinn, bing_and_nrc) %>% 
+  ggplot(aes(index,sentiment, fill = method))+
+  geom_col(show.legend = F)+
+  facet_wrap(~method, ncol=1, scales = "free_y")+theme_bw()
+```
+
+NRC sentiment is high, AFINN has more variance and Bing et.all finds longer stretches of similar texts.
+
+
+## Most common positive and negative words.
+By including count along with word and sentiment, we can find out how much the word contributed to each sentiment.
+
+```{r}
+big_word_counts <- tidy_books %>% 
+  inner_join(get_sentiments("bing")) %>% 
+  count(word, sentiment, sort = T) %>% 
+  ungroup()
+
+big_word_counts
+```
+
+```{r figs2, echo=FALSE,fig.cap="\\label{fig:figs2}Figure 2.3: Words that contribute to positive and negative sentiment in Jane Austen’s novels"}
+
+big_word_counts %>% 
+  group_by(sentiment) %>% 
+  top_n(10) %>% 
+  ungroup() %>% 
+  mutate(word=reorder(word,n)) %>% 
+  ggplot(aes(word, n, fill = sentiment)) + 
+  geom_col(show.legend = F) +
+  facet_wrap(~sentiment, scales = "free_y") + 
+  labs(y = "Contribution to sentiment",
+       x = NULL)+
+  coord_flip()
+```
+
+Here miss is considered as negative sentiment but can be used to address young women. We can add miss to our custom stop words and filter it out along with other stop words. 
+
+```{r}
+custom_stop_words <- bind_rows(data.frame(word = c("miss"),
+                                          lexicon = c("custom")), stop_words)
+custom_stop_words
+```
+
+## Word Cloud
+
+```{r figs3, echo=FALSE,fig.cap="\\label{fig:figs3}Figure 2.4: The most common words in Jane Austen’s novels"}
+
+
+
+library(wordcloud)
+
+tidy_books %>% 
+  anti_join(stop_words) %>% 
+  count(word) %>% 
+  with(wordcloud(word,n,max.words = 100))
+```
+
+Comparision cloud can be used to make a word cloud of positive and negative sentiments. We need to reshape the data into a matrix.
+
+```{r}
+library(reshape2)
+
+tidy_books %>% 
+  inner_join(get_sentiments("bing")) %>% 
+  count(word, sentiment, sort = T) %>% 
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("red","green"),
+                   max.words = 100) 
+```
+
+## Looking at units beyond words
+Some algorithms look beyond unigrams and try to understand the sentiment of the sentence as a whole. Some R packages capable to do such things are coreNLP, cleanNLP, sentimentr.
+
+```{r}
+PandP_sentences <- data_frame(text = prideprejudice) %>% 
+  unnest_tokens(sentence, text, token = "sentences")
+
+PandP_sentences$sentence[2]
+```
+```{r}
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex", 
+                pattern = "Chapter|CHAPTER [\\dIVXLC]") %>%
+  ungroup()
+
+austen_chapters %>% 
+  group_by(book) %>% 
+  summarise(chapters = n())
+```
+
+Now we can find out for each book which chapter has the highest proportions of negative words.
+
+```{r}
+bingnegative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+
+wordcounts <- tidy_books %>%
+  group_by(book, chapter) %>%
+  summarize(words = n())
+
+tidy_books %>%
+  semi_join(bingnegative) %>%
+  group_by(book, chapter) %>%
+  summarize(negativewords = n()) %>%
+  left_join(wordcounts, by = c("book", "chapter")) %>% 
+  mutate(ratio = negativewords/words) %>%
+  top_n(1) %>%
+  ungroup()
+```
+
